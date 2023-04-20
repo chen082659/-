@@ -1,0 +1,403 @@
+from Maix import MIC_ARRAY as mic
+from Maix import GPIO
+import lcd,time,image
+import math
+import utime
+from Maix import GPIO
+from board import board_info
+from fpioa_manager import fm
+from machine import Timer,PWM
+import time
+#导入 FFT 模块
+
+#输入时域数据（例如音频数据）并进行 FFT 运算
+#res = FFT.run(data, points, shift)
+###!!!!!!!!!!!!!!!!!!!!!!!注意注意注意！！！！！！！这些字一定要读！！！！！！！！！！
+###!!!!!!!!!!!!!!!!!!!!!!!注意注意注意！！！！！！！！！！！！！！！！！！
+###!!!!!!!!!!!!!!!!!!!!!!!注意注意注意！！！！！！！！！！！！！！！！！！
+##########################################################################
+##角度只取了阵列上字母s方向的五个RGB灯珠，大概60°，覆盖赛道，所以你的声源超过这个范围系统是不会反应的#############
+##############距离只能在比赛规定场地测算，注意声源和系统垂直距离是275cm（D区中间）##################################
+#########舵机口17，舵机我用的是270°舵机#######红外是1口，用HY.value(0)控制引脚高低电平#################################################
+################你如果是180°舵机，需要把109行左右的Servo(S1,-Angle*0.666)中的0.666删掉#########################################
+mic.init()#默认配置
+lcd.init(invert = 1)   #320*240
+#mic.init(i2s_d0=34, i2s_d1=8, i2s_d2=33, i2s_d3=9, i2s_ws=32, i2s_sclk=10,\
+            #sk9822_dat=7, sk9822_clk=35)#可自定义配置 IO
+io_led_red = 1
+fm.register(io_led_red, fm.fpioa.GPIO1)#配置红外的GPIO
+HY=GPIO(GPIO.GPIO1, GPIO.OUT)
+
+fm.register(3, fm.fpioa.GPIO3)#配置两个开关的GPIO   是3和2脚 01是第二题 10第三题 11第四题
+KG0=GPIO(GPIO.GPIO3, GPIO.IN, GPIO.PULL_UP)
+                                                             #建议拿第四题测试
+fm.register(16, fm.fpioa.GPIO2)#配置两个开关的GPIO   是3和2脚 01是第二题 10第三题 11第四题
+KG1=GPIO(GPIO.GPIO2, GPIO.IN, GPIO.PULL_UP)
+#KG0.value(1)
+#image.font_load(image.UTF8, 16, 16, '/sd/0xA00000_font_uincode_16_16_tblr.Dzk')
+#image.font_load(image.UTF8, 16, 16, 0xA00000)   #加载字库
+tim = Timer(Timer.TIMER0, Timer.CHANNEL0, mode=Timer.MODE_PWM)
+S1 = PWM(tim, freq=50, duty=0, pin=17)#舵机初始化
+
+num=0
+num2=0
+Angle_LB = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+#Angle_LB=[]
+t=0
+t1=0
+t2=0
+maxnum=0
+minnum=0
+jiaodu=0
+Angle_last=0
+b=[3,1,2,5,6]
+i=100
+a=[]
+Biaozhi2=0    #函数2标志位
+cishu=0
+pid=0
+err=0
+JD=0
+#以上变量都是给函数用的工具人，不用调用或者读取，没用
+
+##########################卡尔曼##############################
+KF_lastP=0.1  #上次的协方差
+KF_nowP=0   #本次的协方差
+KF_x_hat=0     #卡尔曼滤波的计算值，即为后验最优值
+KF_Kg=0        #卡尔曼增益系数
+KF_Q=0         #过程噪声
+KF_R=0.01         #测量噪声
+##################################################卡尔曼##########################
+def Kalman_Filter(value):
+    global KF_lastP        #上次的协方差
+    global KF_nowP         #本次的协方差
+    global KF_x_hat        #卡尔曼滤波的计算值，即为后验最优值
+    global KF_Kg           #卡尔曼增益系数
+    global KF_Q            #过程噪声
+    global KF_R            #测量噪声
+    output=0        #output为卡尔曼滤波计算值
+    x_t=KF_x_hat    #当前先验预测值 = 上一次最优值
+    KF_nowP=KF_lastP+KF_Q       #本次的协方差矩阵
+    KF_Kg=KF_nowP/(KF_nowP+KF_R)#卡尔曼增益系数计算
+    output=x_t+KF_Kg*(value-x_t)#当前最优值
+    KF_x_hat=output     #更新最优值
+    KF_lastP=(1-KF_Kg)*KF_nowP#更新协方差矩阵
+    return output
+
+##############################函数0###############################################
+def get_med(jiaodu,cs):
+    global a
+    global num2
+    a.append(jiaodu)
+    if num2==(cs-1) :
+        num2=0
+        for j in range(1,len(a)):
+            for i in range(len(a)-1):
+                if a[i] > a[i+1]:
+                    a[i], a[i+1] = a[i+1],a[i]
+        t2=a[int((cs-1)/2)]
+        a=[]      #清空，准备下一次测量
+        return t2
+
+    else :
+        num2+=1
+        return 1000
+
+##############################函数1###############################################
+def get_LB(jd,cs):       #滤波，jd是传入数据，cs是滤波等级要大于2，越高越慢，返回滤波后的数据
+    global Angle_LB
+    global num
+    global minnum
+    global jiaodu
+    global maxnum
+    Angle_LB[num]=jd
+    if Angle_LB[num]>Angle_LB[maxnum] : maxnum=num  #取最大最小值的位号
+    if Angle_LB[num]<Angle_LB[minnum] : minnum=num
+
+
+    if num==cs:
+       Angle_LB[maxnum]=0                          #去掉最大值最小值
+       Angle_LB[minnum]=0
+       for i in range(cs):
+           jiaodu+=Angle_LB[i]
+       jiaodu/=(cs-1)
+       num=0
+       maxnum=0
+       minnum=0
+       return int(jiaodu)
+    else:
+        num+=1
+        return 1000
+
+##############################函数2##########舵机函数###############################
+def Servo(servo,angle):
+    S1.duty((angle+90)/180*10+2.5)
+##############################函数3######第四题函数###############################
+def get_mic_dir4():
+    global Angle_LB
+    global Angle_last
+    global pid
+    global JD
+    AngleX=0
+    AngleY=0
+    AngleR=0
+    Angle=0
+    AngleAddPi=0
+    Juli=0
+    mic_list=[]
+    imga = mic.get_map()    # 获取声音源分布图像(返回声源黑白位图)
+    b = mic.get_dir(imga)   # 计算、获取声源方向(从声源位图计算声源方向 返回12个强度值 对应12个LED灯)
+    #print(b[0],b[1],b[2],b[10],b[11])
+
+    for i in range(len(b)):
+        if b[i]>=0:
+            AngleX+= b[i] * math.sin(i * math.pi/6)
+            AngleY+= b[i] * math.cos(i * math.pi/6)
+    AngleX=round(AngleX,6) #计算坐标转换值
+    AngleY=round(AngleY,6)
+    if AngleY<0:AngleAddPi=180
+    if AngleX<0 and AngleY > 0:AngleAddPi=360
+    if AngleX!=0 or AngleY!=0: #参数修正
+        if AngleY==0:
+            Angle=90 if AngleX>0 else 270 #填补X轴角度
+        else:
+            Angle=AngleAddPi+round(math.degrees(math.atan(AngleX/AngleY)),4) #计算角度
+
+
+
+        if (Angle>0 and Angle<45)or (Angle>315 and Angle<360):
+
+
+
+                if Angle>315 and Angle<360:             #处理315-360的角度值
+                    Angle=Angle-360
+
+                Angle=Angle_last*0.1+ Angle*0.9      #低通滤波
+
+                t=get_LB(Angle,3)           #滤波，jd是传入数据，cs是滤波等级，越高越慢，返回滤波后的数据
+
+
+                if t !=1000 :
+                    #t1=get_med(t,3)    #再取中位数
+                    #if t1 !=1000 :
+                    if t>30 : t=30
+                    if t<-30 : t=-30
+                    Angle=t+0.00000000
+                    Kalman_Filter(Angle)
+                    Angle_last=Angle+0.00000000
+                    lcd.draw_string(60, 30, "Angle: " + str(-Angle), lcd.RED, lcd.BLACK)
+                    lcd.draw_string(60, 50, "Distance: " + str(275/math.cos(-Angle*math.pi/180))+"cm", lcd.RED, lcd.BLACK)
+                    lcd.draw_string(60, 70, "mode: " + str(4), lcd.RED, lcd.BLACK)
+
+                    Servo(S1,-pid)       #控制270°舵机，180°把0.666删除
+                    HY.value(1)
+
+                    JD=Angle
+
+
+        AngleR=round(math.sqrt(AngleY*AngleY+AngleX*AngleX),4) #计算强度
+        mic_list.append(AngleX)     #X坐标
+        mic_list.append(AngleY)     #Y坐标
+        mic_list.append(AngleR)     #强度
+        mic_list.append(Angle)      #角度
+
+        #Juli=2.5/math.cos(Angle)
+        #mic_list.append(Juli)
+        #print(Juli)
+    a = mic.set_led(b,(10,10,0))# 配置 RGB LED 颜色值   （从计算的声源方向设置点亮对应的LED灯）
+    #lcd.display(0,color=(255,0,0))
+    #img1=draw_line(100,0,100,240,color=(255,0,0))
+    #lcd.display(img1)
+
+    #lcd._line(150,0,150,240,color=(255,0,0))
+    #img.draw_rectangle((30,30,50,50), color = (255, 0, 0))
+
+
+    return mic_list #返回列表，X坐标，Y坐标，强度，角度
+##############################函数3######第三题函数###############################
+def get_mic_dir3():
+
+    global Angle_LB
+    global Angle_last
+    global cishu
+    AngleX=0
+    AngleY=0
+    AngleR=0
+    Angle=0
+    AngleAddPi=0
+    Juli=0
+    mic_list=[]
+    imga = mic.get_map()    # 获取声音源分布图像(返回声源黑白位图)
+    b = mic.get_dir(imga)   # 计算、获取声源方向(从声源位图计算声源方向 返回12个强度值 对应12个LED灯)
+    #print(b[0],b[1],b[2],b[10],b[11])
+    cishu+=1   #判断进入函数的次数
+    if cishu==1 :
+        HY.value(0)              # 第一次设置红外地线高电平，关闭红外
+    for i in range(len(b)):
+        if b[i]>=2:
+            AngleX+= b[i] * math.sin(i * math.pi/6)
+            AngleY+= b[i] * math.cos(i * math.pi/6)
+    AngleX=round(AngleX,6) #计算坐标转换值
+    AngleY=round(AngleY,6)
+    if AngleY<0:AngleAddPi=180
+    if AngleX<0 and AngleY > 0:AngleAddPi=360
+    if AngleX!=0 or AngleY!=0: #参数修正
+        if AngleY==0:
+            Angle=90 if AngleX>0 else 270 #填补X轴角度
+        else:
+            Angle=AngleAddPi+round(math.degrees(math.atan(AngleX/AngleY)),4) #计算角度
+
+
+
+        if (Angle>0 and Angle<45)or (Angle>315 and Angle<360):
+
+                if Angle>315 and Angle<360:             #处理330-360的角度值
+                    #if Angle<340 : Angle=Angle-5
+                    Angle=Angle-360
+                #if Angle>10 and Angle<45:
+                    #Angle=Angle+10
+                #Angle=Angle_last*0.1+ Angle*0.9      #低通滤波
+
+                t=get_LB(Angle,10)           #滤波，jd是传入数据，cs是滤波等级，越高越慢，返回滤波后的数据
+
+
+                if t !=1000 :
+                    t1=get_med(t,3)    #再取中位数
+                    if t1 !=1000 :
+                        if t1>30 : t1=30
+                        if t1<-30 : t1=-30
+                        Angle=t1+0.00000000000
+                        Angle_last=Angle
+                        HY.value(1)              # 设置红外地线低电平，开启红外
+                        lcd.draw_string(60, 30, "Angle: " + str(-Angle), lcd.RED, lcd.BLACK)
+                        lcd.draw_string(60, 50, "Distance: " + str(275/math.cos(-Angle*math.pi/180))+"cm", lcd.RED, lcd.BLACK)
+                        lcd.draw_string(60, 70, "mode: " + str(3), lcd.RED, lcd.BLACK)
+                        #距离只能在比赛规定场地测算，注意声源和系统垂直距离是275cm（D区中间）
+
+                        Servo(S1,-Angle)       #控制270°舵机，180°把0.75删除
+
+
+
+        AngleR=round(math.sqrt(AngleY*AngleY+AngleX*AngleX),4) #计算强度
+        mic_list.append(AngleX)     #X坐标
+        mic_list.append(AngleY)     #Y坐标
+        mic_list.append(AngleR)     #强度
+        mic_list.append(Angle)      #角度
+
+        #Juli=2.5/math.cos(Angle)
+        #mic_list.append(Juli)
+        #print(Juli)
+    a = mic.set_led(b,(10,10,0))# 配置 RGB LED 颜色值   （从计算的声源方向设置点亮对应的LED灯）
+    #lcd.display(0,color=(255,0,0))
+    #img1=draw_line(100,0,100,240,color=(255,0,0))
+    #lcd.display(img1)
+
+    #lcd._line(150,0,150,240,color=(255,0,0))
+    #img.draw_rectangle((30,30,50,50), color = (255, 0, 0))
+
+
+    return mic_list #返回列表，X坐标，Y坐标，强度，角度
+
+##############################函数5###############################################
+def get_mic_dir2():   ######################第二题函数
+    global Angle_LB
+    global Angle_last
+    AngleX=0
+    AngleY=0
+    AngleR=0
+    Angle=0
+    AngleAddPi=0
+    Juli=0
+    mic_list=[]
+    imga = mic.get_map()    # 获取声音源分布图像(返回声源黑白位图)
+    b = mic.get_dir(imga)   # 计算、获取声源方向(从声源位图计算声源方向 返回12个强度值 对应12个LED灯)
+    #print(b[0],b[1],b[2],b[10],b[11])
+    Servo(S1,0)       #控制270°舵机保持中立
+    HY.value(0)              # 设置红外地线高电平，关闭红外
+    for i in range(len(b)):
+        if b[i]>=2:
+            AngleX+= b[i] * math.sin(i * math.pi/6)
+            AngleY+= b[i] * math.cos(i * math.pi/6)
+    AngleX=round(AngleX,6) #计算坐标转换值
+    AngleY=round(AngleY,6)
+    if AngleY<0:AngleAddPi=180
+    if AngleX<0 and AngleY > 0:AngleAddPi=360
+    if AngleX!=0 or AngleY!=0: #参数修正
+        if AngleY==0:
+            Angle=90 if AngleX>0 else 270 #填补X轴角度
+        else:
+            Angle=AngleAddPi+round(math.degrees(math.atan(AngleX/AngleY)),4) #计算角度
+
+
+
+        if (Angle>0 and Angle<45)or (Angle>315 and Angle<360):
+
+
+
+                if Angle>315 and Angle<360:             #处理330-360的角度值
+                    if Angle<330 : Angle=Angle-9
+                    Angle=Angle-350
+                #Angle=Angle_last*0.3+ Angle*0.7      #低通滤波
+
+                t=get_LB(Angle,10)           #滤波，jd是传入数据，cs是滤波等级，越高越慢，返回滤波后的数据
+
+
+                if t !=1000 :
+                    t1=get_med(t,3)    #再取中位数
+                    if t1 !=1000 :
+                        if t1>30 : t1=30
+                        if t1<-30 : t1=-30
+                        Angle=t1+0.00000000000
+                        Angle_last=Angle
+                        lcd.draw_string(60, 30, "Angle: " + str(-Angle), lcd.RED, lcd.BLACK)
+                        lcd.draw_string(60, 50, "Distance: " + str(275/math.cos(-Angle*math.pi/180))+"cm", lcd.RED, lcd.BLACK)
+                        lcd.draw_string(60, 70, "mode: " + str(2), lcd.RED, lcd.BLACK)
+
+                        #距离只能在比赛规定场地测算，注意声源和系统垂直距离是275cm（D区中间）
+
+
+        AngleR=round(math.sqrt(AngleY*AngleY+AngleX*AngleX),4) #计算强度
+        mic_list.append(AngleX)     #X坐标
+        mic_list.append(AngleY)     #Y坐标
+        mic_list.append(AngleR)     #强度
+        mic_list.append(Angle)      #角度
+
+        #Juli=2.5/math.cos(Angle)
+        #mic_list.append(Juli)
+        #print(Juli)
+    a = mic.set_led(b,(10,10,0))# 配置 RGB LED 颜色值   （从计算的声源方向设置点亮对应的LED灯）
+    #lcd.display(0,color=(255,0,0))
+    #img1=draw_line(100,0,100,240,color=(255,0,0))
+    #lcd.display(img1)
+
+    #lcd._line(150,0,150,240,color=(255,0,0))
+    #img.draw_rectangle((30,30,50,50), color = (255, 0, 0))
+
+
+    return mic_list #返回列表，X坐标，Y坐标，强度，角度
+
+
+
+##############################主循环，###############################################
+#这里因为我的2引脚有问题，下拉不了，如果你的引脚初始电平是0，就不用(~KG1.value()+2)这个处理了
+#可以直接用KG1.value()==1来判断，如果有问题，就把这几个if删掉，保留第四题中的函数，程序才能跑
+#flag=1
+#while True:
+#   if KG1.value()==0 :
+#        break
+#   else:
+#        get_mic_dir2()
+
+#while True:
+#   if KG0.value()==0 :
+#        flag=0
+#    if flag==0 :
+#        break
+#    get_mic_dir3()
+
+while True:
+
+    get_mic_dir4()
+    err=JD-pid           #简易PID控制舵机
+    pid+=err*0.1
+    Servo(S1,-pid)
